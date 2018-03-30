@@ -28,8 +28,11 @@ cursor = conn.cursor()
 cursor.execute("""select student_id, name from students where student_id=%s;
 				""", (student_id,))
 
-
-print_header(*cursor.fetchone())
+row = cursor.fetchone()
+if row is not None:
+	print_header(*row)
+else:
+	print("Student not found.", file=sys.stderr)
 
 cursor.execute("""select term_code, course_code, course_name, grade
 				  from enrollments natural join course_offerings
