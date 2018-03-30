@@ -1,0 +1,194 @@
+-- CSC 370 - Spring 2018
+-- Tal Melamed
+-- V00795078
+
+drop table if exists prerequisites;
+drop table if exists enrollments;
+drop table if exists course_offerings;
+drop table if exists courses;
+drop table if exists students;
+
+drop function if exists add_duplicate_student();
+drop function if exists add_duplicate_course();
+drop function if exists check_prerequisite_offered();
+drop function if exists check_max_capacity();
+drop function if exists check_prerequisites_satisfied();
+drop function if exists delete_enrollment_grade_check();
+
+create table students( 
+	student_id varchar(9) primary key,
+	name varchar(255) not null
+	);
+
+create table courses(
+	course_code varchar(10) primary key
+	);
+
+create table course_offerings(
+	course_code varchar(10),
+	course_name varchar(128) not null,
+	term_code int,
+	max_capacity int,
+	instructor varchar(255) not null,
+	primary key(course_code, term_code),
+	foreign key(course_code) references courses(course_code)
+		on delete restrict
+		on update cascade,
+	check(length(course_name) > 0),
+	check(max_capacity >= 0)
+	);
+
+create table enrollments(
+	course_code varchar(10),
+	term_code int,
+	student_id varchar(9),
+	grade int,
+	primary key(course_code, term_code, student_id),
+	foreign key(course_code, term_code) references course_offerings(course_code, term_code)
+		on delete restrict
+		on update cascade,
+	foreign key(student_id) references students(student_id)
+		on delete restrict
+		on update cascade,
+	check(grade is null or (grade >= 0 and grade <= 100))
+	);
+
+create table prerequisites(
+	course_code varchar(10),
+	term_code int,
+	prerequisite varchar(10),
+	primary key(course_code, term_code, prerequisite),
+	foreign key(course_code, term_code) references course_offerings(course_code, term_code)
+		on delete cascade
+		on update cascade,
+	foreign key(prerequisite) references courses(course_code)
+		on delete restrict
+		on update cascade
+	);
+
+create function add_duplicate_student()
+returns trigger as
+$body$
+begin
+if new.student_id = (select student_id from students where student_id = new.student_id)
+then
+	if new.name != (select name from students where student_id = new.student_id)
+	then 
+		raise exception 'student name different from existing record.';
+	else 
+		return NULL;
+	end if;
+end if;
+return new;
+end
+$body$
+language plpgsql;
+
+create trigger add_duplicate_student_trigger
+	before insert on students
+	for each row
+	execute procedure add_duplicate_student();
+
+create function add_duplicate_course()
+returns trigger as
+$body$
+begin
+if new.course_code = (select course_code from courses where course_code = new.course_code)
+then
+	return NULL;
+end if;
+return new;
+end
+$body$
+language plpgsql;
+
+create trigger add_duplicate_course_trigger
+	before insert on courses
+	for each row
+	execute procedure add_duplicate_course();
+
+
+create function check_prerequisite_offered()
+returns trigger as
+$body$
+begin
+if (select count(*) from course_offerings where course_code = new.prerequisite) > 0
+then
+	return new;
+end if;
+raise exception 'prerequisite not in course offerings';
+end
+$body$
+language plpgsql;
+
+create trigger check_prerequisite_offered_constraint
+	before insert or update on prerequisites
+	for each row
+	execute procedure check_prerequisite_offered();
+
+create function check_max_capacity()
+returns trigger as
+$body$
+begin
+if (select count(*) from enrollments 
+	where course_code = new.course_code and term_code = new.term_code)
+	 > (select max_capacity from course_offerings
+	  	where course_code = new.course_code and term_code = new.term_code)
+then
+	raise exception 'Course offering full.';
+end if;
+return new;
+end
+$body$
+language plpgsql;
+
+create trigger check_max_capacity_constraint
+	after insert or update on enrollments
+	for each row
+	execute procedure check_max_capacity();
+
+create function check_prerequisites_satisfied()
+returns trigger as
+$body$
+begin
+if (select count(*) from 
+		(select prerequisite from prerequisites 
+			where course_code = new.course_code and term_code = new.term_code
+		except
+		select course_code from enrollments
+			where student_id = new.student_id and term_code < new.term_code 
+			and (grade is null or grade >= 50)
+		) as a
+	) > 0
+then
+	raise exception 'One or more prerequisites not satisfied.';
+end if;
+return new;
+end
+$body$
+language plpgsql;
+
+create trigger check_prerequisites_satisfied_constraint
+	before insert on enrollments
+	for each row
+	execute procedure check_prerequisites_satisfied();
+
+create function delete_enrollment_grade_check()
+returns trigger as
+$body$
+begin
+if (select grade from enrollments 
+	where course_code = old.course_code and term_code = old.term_code and student_id = old.student_id)
+	is null
+then
+	return old;
+end if;
+raise exception 'Cannot drop course with grade.';
+end
+$body$
+language plpgsql;
+
+create trigger delete_enrollment_grade_check_trigger
+	before delete on enrollments
+	for each row
+	execute procedure delete_enrollment_grade_check();
